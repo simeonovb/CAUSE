@@ -130,6 +130,7 @@ process MERGE_LD {
     path chunks, stageAs: "chunks/?/*"
     path failed, stageAs: "failures/?/*"
     path snps
+    val r2_min
 
     output:
     path "ld_proxies.tsv"
@@ -137,7 +138,7 @@ process MERGE_LD {
 
     script:
     """
-    merge_ld.py --chunks chunks --failures failures --snps ${snps} --r2-min ${params.ld_r2_min} \\
+    merge_ld.py --chunks chunks --failures failures --snps ${snps} --r2-min ${r2_min} \\
         --out ld_proxies.tsv --failed-out ld_failed.tsv
     """
 }
@@ -146,9 +147,42 @@ process MERGE_LD {
 def ask(String question) {
     def console = System.console()
     if (!console) {
-        error "Some settings are missing and there is no interactive terminal to ask in. Pass them as flags, e.g. --traits \"heart,cardiac\" --match contains --ld_pop EUR --ld_build grch38"
+        error "Some settings are missing and there is no interactive terminal to ask in. Pass them as flags, e.g. --traits \"heart,cardiac\" --match contains --ld_pop EUR --ld_build grch38 --ld_r2_min 0.8"
     }
     return console.readLine('%s', question)
+}
+
+// make sure an LDlink token is stored for this user, asking for one (once) if not
+def ensureLdToken() {
+    def store = nextflow.secret.SecretsLoader.instance.load()
+    if (store.getSecret('LDLINK_TOKEN')) {
+        return
+    }
+    def console = System.console()
+    if (!console) {
+        error "No LDlink token is stored. Get one at https://ldlink.nih.gov/?tab=apiaccess and run: nextflow secrets set LDLINK_TOKEN <token>"
+    }
+    def typed = console.readPassword('%s', 'The LD proxy step needs a personal LDlink token.\nGet one (free, sent by email) at https://ldlink.nih.gov/?tab=apiaccess\nPaste your token (hidden as you type; it is saved so you are only asked once): ')
+    def token = typed ? new String(typed).trim() : ''
+    if (!token) {
+        error "No LDlink token given"
+    }
+
+    // try the token on one small lookup before saving it
+    def reply
+    try {
+        def query = "var=rs3&pop=CEU&r2_d=r2&window=1000&genome_build=grch37&token=${URLEncoder.encode(token, 'UTF-8')}"
+        reply = new URL("https://ldlink.nih.gov/LDlinkRest/ldproxy?${query}").getText(connectTimeout: 30000, readTimeout: 120000)
+    }
+    catch (IOException e) {
+        error "Could not reach LDlink to check the token: ${e.message}"
+    }
+    if (reply.toLowerCase().contains('api token')) {
+        error "LDlink did not accept that token, so it was not saved. Check it and run the pipeline again"
+    }
+    store.putSecret('LDLINK_TOKEN', token)
+    store.close()  // writes the secrets store to disk
+    log.info "LDlink token saved. To change it later: nextflow secrets set LDLINK_TOKEN <token>"
 }
 
 // 1000 Genomes populations LDlink can compute LD in
@@ -220,6 +254,18 @@ def parsePop(answer) {
     return codes.contains('ALL') ? 'ALL' : codes.join('+')
 }
 
+def askR2() {
+    return ask('Which R2 threshold should proxies meet? Proxies with R2 below it are left out.\nType a number from 0 to 1 (0 keeps everything LDlink returns): ')
+}
+
+def parseR2(answer) {
+    def text = answer.toString().trim().replace(',', '.')
+    if (!text.isNumber() || text.toBigDecimal() < 0 || text.toBigDecimal() > 1) {
+        error "R2 threshold must be a number from 0 to 1, got '${text}'"
+    }
+    return text.toBigDecimal()
+}
+
 def parseBuild(answer) {
     def builds = ldBuilds().keySet() as List
     def text = answer.toString().trim().toLowerCase() ?: '3'
@@ -258,7 +304,9 @@ workflow {
     // LD settings are asked up front too, so the run needs no further input
     ld_pop = parsePop(params.ld_pop ?: askPop())
     ld_build = parseBuild(params.ld_build ?: askBuild())
-    log.info "LD proxies: populations ${ld_pop}, assembly ${ld_build}, R2 >= ${params.ld_r2_min}"
+    ld_r2_min = parseR2(params.ld_r2_min != null ? params.ld_r2_min : askR2())
+    ensureLdToken()
+    log.info "LD proxies: populations ${ld_pop}, assembly ${ld_build}, R2 >= ${ld_r2_min}"
 
     if (match == 'contains') {
         log.info "Fetching GWAS Catalog associations for traits containing: ${terms.join(', ')}"
@@ -291,5 +339,5 @@ workflow {
         snps_ch = snps_ch.take(params.ld_max_snps.toString().toInteger())
     }
     LD_PROXY(snps_ch.collate(params.ld_chunk_size.toString().toInteger()), ld_pop, ld_build)
-    MERGE_LD(LD_PROXY.out.proxies.collect(), LD_PROXY.out.failed.collect(), EXTRACT_SNPS.out.snps)
+    MERGE_LD(LD_PROXY.out.proxies.collect(), LD_PROXY.out.failed.collect(), EXTRACT_SNPS.out.snps, ld_r2_min)
 }
