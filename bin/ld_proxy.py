@@ -55,7 +55,10 @@ def ld_proxy(snp):
 
 
 tables, failures = [], []
-for snp in args.snps.split(","):
+snp_list = args.snps.split(",")
+for number, snp in enumerate(snp_list, start=1):
+    # printed as each SNP is done, so a long run visibly moves along
+    print(f"  {number} of {len(snp_list)} SNPs in this chunk: {snp}", flush=True)
     table, error = ld_proxy(snp)
     if error:
         failures.append([snp, error])

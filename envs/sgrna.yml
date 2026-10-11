@@ -1,0 +1,10 @@
+name: sgrna
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - pandas=2.2
+  - pyfaidx=0.9
+  - openjdk=21
+  - curl=8.9

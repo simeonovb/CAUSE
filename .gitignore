@@ -1,9 +1,37 @@
-# Nextflow internal directories
+# Nextflow internal directories and logs
 .nextflow/
 .nextflow.*
+.nextflow.log*
 work/
 
 # Pipeline outputs
 results/
+test_results/
 output.txt
-.nextflow.log*
+
+# Nextflow reports, written by -with-report, -with-trace and friends
+report*.html
+timeline*.html
+trace*.txt
+dag.*
+
+# Genome and FlashFry index cache
+genome_cache/
+
+# Input and reference data: keep these out of the repository
+*.bed
+*.bed.gz
+*.narrowPeak
+*.broadPeak
+*.fa
+*.fa.gz
+*.fasta
+*.fasta.gz
+*.fai
+*.db
+*.db.header
+*.jar
+
+# Editor and OS clutter
+__pycache__/
+.DS_Store

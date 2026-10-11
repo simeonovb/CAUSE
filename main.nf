@@ -1,3 +1,8 @@
+// the settings as answered, filled in by the workflow and read again when the run
+// finishes. A map is used because the handler at the end does not see plain
+// variables set inside the workflow
+run_settings = [keep_genome: false]
+
 process RESOLVE_TRAITS {
     tag "${keyword}"
     conda "${projectDir}/envs/gwas.yml"
@@ -101,9 +106,12 @@ process LD_PROXY {
     secret 'LDLINK_TOKEN'
 
     // retry transient API failures, but not exit status 3 (bad token or settings)
-    errorStrategy { task.exitStatus == 3 ? 'terminate' : 'retry' }
+    // or a task killed because the run was stopped (129, 130, 143): retrying that
+    // leaves a lookup running after the pipeline has gone, holding the token
+    errorStrategy { task.exitStatus in [3, 129, 130, 143] ? 'terminate' : 'retry' }
     maxRetries 3
-    // LDlink only allows one request at a time per token
+    // LDlink's API terms: "API access is limited to sequential requests only",
+    // so one request at a time per token. Do not raise this.
     maxForks 1
 
     input:
@@ -133,13 +141,140 @@ process MERGE_LD {
     val r2_min
 
     output:
-    path "ld_proxies.tsv"
-    path "ld_failed.tsv"
+    path "ld_proxies.tsv", emit: proxies
+    path "ld_failed.tsv", emit: failed
+    path "ld_snps.bed", emit: bed
 
     script:
     """
     merge_ld.py --chunks chunks --failures failures --snps ${snps} --r2-min ${r2_min} \\
-        --out ld_proxies.tsv --failed-out ld_failed.tsv
+        --out ld_proxies.tsv --failed-out ld_failed.tsv --bed-out ld_snps.bed
+    """
+}
+
+process OVERLAP_PEAKS {
+    tag "${name}"
+    conda "${projectDir}/envs/gwas.yml"
+    publishDir "${params.outdir}/atac_overlap", mode: 'copy', overwrite: true
+
+    input:
+    // staged under a fixed name, since peak file names can hold spaces or brackets
+    tuple val(name), path(peaks, stageAs: 'peaks.bed')
+    path proxies
+
+    output:
+    path "*.peaks_with_snps.bed", emit: peaks
+    path "*.snps_in_peaks.tsv", emit: snps
+
+    script:
+    """
+    overlap_peaks.py --peaks ${peaks} --snps ${proxies} \\
+        --out-peaks ${name}.peaks_with_snps.bed --out-snps ${name}.snps_in_peaks.tsv
+    """
+}
+
+process GET_FLASHFRY {
+    conda "${projectDir}/envs/sgrna.yml"
+    // kept next to the genome, so it is downloaded once
+    storeDir "${params.genome_dir}"
+
+    output:
+    path "flashfry.jar"
+
+    script:
+    """
+    curl -sSL --retry 3 -o flashfry.jar ${params.flashfry_url}
+    """
+}
+
+process DOWNLOAD_GENOME {
+    tag "${build}"
+    conda "${projectDir}/envs/sgrna.yml"
+    storeDir "${params.genome_dir}"
+    debug params.progress
+
+    input:
+    val build
+
+    output:
+    tuple val(build), path("${build}.fa")
+
+    script:
+    // the assembly chosen for the LD lookup decides the genome, so guides are
+    // always designed on the same coordinates the peaks and SNPs are on
+    def ucsc = [grch37: 'hg19', grch38: 'hg38', grch38_high_coverage: 'hg38'][build]
+    """
+    echo "Downloading the ${ucsc} genome for ${build} (about 1 GB)"
+    curl -sSL --retry 3 -o genome.fa.gz ${params.genome_url_base}/${ucsc}/bigZips/${ucsc}.fa.gz &
+    download=\$!
+    while kill -0 \$download 2>/dev/null; do
+        sleep 60
+        echo "  ...\$(du -h genome.fa.gz 2>/dev/null | cut -f1) downloaded"
+    done
+    wait \$download
+
+    echo "Unpacking it (about 3 GB on disk)"
+    gunzip -c genome.fa.gz > ${build}.fa
+    rm genome.fa.gz
+    """
+}
+
+process FLASHFRY_INDEX {
+    tag "${build} ${enzyme}"
+    conda "${projectDir}/envs/sgrna.yml"
+    storeDir "${params.genome_dir}"
+    debug params.progress
+
+    input:
+    tuple val(build), path(fasta)
+    path jar
+    val enzyme
+
+    output:
+    tuple path("${build}.${enzyme}.db"), path("${build}.${enzyme}.db.header")
+
+    script:
+    """
+    mkdir -p flashfry_tmp
+    echo "Building the FlashFry index for ${build}, ${enzyme}."
+    echo "This takes about half an hour and 20 GB of scratch space. It writes 16384 bins,"
+    echo "and reports every thousandth one, so the count below is the progress."
+    # FlashFry logs its progress on stderr, which is merged in so it can be seen live
+    java -Xmx${params.flashfry_memory} -jar ${jar} index --reference ${fasta} \\
+        --database ${build}.${enzyme}.db --tmpLocation flashfry_tmp --enzyme ${enzyme} 2>&1
+    rm -rf flashfry_tmp
+    """
+}
+
+process DESIGN_SGRNAS {
+    tag "${name}"
+    conda "${projectDir}/envs/sgrna.yml"
+    publishDir "${params.outdir}/sgrna", mode: 'copy', overwrite: true
+
+    input:
+    tuple val(name), path(peaks)
+    tuple val(build), path(fasta)
+    tuple path(database), path(header)
+    path jar
+    val enzyme
+    val per_peak
+    path snps
+
+    output:
+    path "${name}.sgrnas.tsv", emit: guides
+    path "${name}.sgrnas.bed", emit: bed
+    path "${name}.sgrna_diagnostics.tsv", emit: diagnostics
+
+    script:
+    """
+    design_sgrnas.py --peaks ${peaks} --fasta ${fasta} --database ${database} --jar ${jar} \\
+        --enzyme ${enzyme} --per-peak ${per_peak} \\
+        --max-run ${params.sgrna_max_run} --max-1mm ${params.sgrna_max_1mm} \\
+        --max-2mm ${params.sgrna_max_2mm} --min-hsu ${params.sgrna_min_hsu} \\
+        --rank ${params.sgrna_rank} \\
+        --min-specificity ${params.sgrna_min_specificity} \\
+        --snps ${snps} --out ${name}.sgrnas.tsv --out-bed ${name}.sgrnas.bed \\
+        --out-diagnostics ${name}.sgrna_diagnostics.tsv
     """
 }
 
@@ -147,7 +282,7 @@ process MERGE_LD {
 def ask(String question) {
     def console = System.console()
     if (!console) {
-        error "Some settings are missing and there is no interactive terminal to ask in. Pass them as flags, e.g. --traits \"heart,cardiac\" --match contains --ld_pop EUR --ld_build grch38 --ld_r2_min 0.8"
+        error "Some settings are missing and there is no interactive terminal to ask in. Pass them as flags, e.g. --traits \"heart,cardiac\" --match contains --ld_pop EUR --ld_build grch38 --ld_r2_min 0.8 --atac_peaks peaks.bed"
     }
     return console.readLine('%s', question)
 }
@@ -276,6 +411,96 @@ def parseBuild(answer) {
     return build
 }
 
+def askPeaks(build) {
+    return ask("Which ATAC-seq peak file(s) should the SNPs be overlapped with?\nBED format, on the same assembly as the LD lookup (${build}).\nType one or more paths, comma-separated: ")
+}
+
+// turn "PM.bed, SN.bed" into a list of [name, file], checking each file exists
+def parsePeaks(answer) {
+    def paths = (answer instanceof List ? answer : answer.toString().tokenize(','))
+        .collect { it.toString().trim().replaceAll(/^["']|["']$/, '') }
+        .findAll { it }
+    if (!paths) {
+        error "No ATAC-seq peak file given"
+    }
+    def peaks = paths.collect { path ->
+        def bed = new File(path.replaceFirst(/^~/, System.getProperty('user.home')))
+        if (!bed.isFile()) {
+            error "ATAC-seq peak file not found: ${path}"
+        }
+        // outputs are named after the file, e.g. PM_peaks.bed gives PM_peaks
+        def name = bed.name.replaceFirst(/(?i)(\.bed|\.narrowPeak|\.broadPeak)?(\.gz)?$/, '').replaceAll(/[^\w.-]+/, '_')
+        [name, bed.toPath().toAbsolutePath()]
+    }
+    def names = peaks.collect { it[0] }
+    if (names.toUnique().size() < names.size()) {
+        error "ATAC-seq peak files must have different file names, got: ${names.join(', ')}"
+    }
+    return peaks
+}
+
+// the nucleases offered in the menu; the other FlashFry profiles can still be
+// typed in full, or passed with --sgrna_enzyme
+def sgrnaEnzymes() {
+    return [
+        'spcas9-ngg-20': 'SpCas9, NGG PAM, 20 nt spacer. Scored for efficiency and specificity',
+        'sacas9-nngrrt-21': 'SaCas9, NNGRRT PAM, 21 nt spacer. Ranked by genome uniqueness only',
+    ]
+}
+
+def allSgrnaEnzymes() {
+    return ['spcas9-ngg-20', 'spcas9-ngg-19', 'spcas9-nag-20', 'spcas9-ngg-nag-20',
+            'spcas9-ngg-nag-19', 'spg-ngn-20', 'sacas9-nngrrt-21', 'sacas9-nngrrt-22',
+            'cpf1-tttn-20', 'ascas12a-tttv-23', 'lbcas12a-tttv-23', 'encas12a-tttn-23',
+            'cas12a-2xnls-tttn-23']
+}
+
+def askEnzyme() {
+    def codes = sgrnaEnzymes().keySet() as List
+    def menu = codes.withIndex().collect { code, i -> "  ${i + 1}) ${code}  (${sgrnaEnzymes()[code]})" }.join('\n')
+    return ask("Which nuclease will the guides be used with? The PAM decides where guides can sit.\n${menu}\nChoose 1 or 2 [1]: ")
+}
+
+def parseEnzyme(answer) {
+    def codes = sgrnaEnzymes().keySet() as List
+    def text = answer.toString().trim().toLowerCase() ?: '1'
+    def enzyme = text ==~ /\d+/ && text.toInteger() <= codes.size() ? codes[text.toInteger() - 1] : text
+    if (!(enzyme in allSgrnaEnzymes())) {
+        error "Unknown nuclease '${text}'. Choose from: ${allSgrnaEnzymes().join(', ')}"
+    }
+    return enzyme
+}
+
+def askKeepGenome() {
+    return ask('The genome and its FlashFry index take about 6 GB, and building the index takes around half an hour.\n  1) keep them when the run finishes, so the next run needs neither\n  2) delete them when the run finishes, to save the space\nChoose 1 or 2 [1]: ')
+}
+
+def parseKeepGenome(answer) {
+    if (answer instanceof Boolean) {
+        return answer
+    }
+    def text = answer.toString().trim().toLowerCase() ?: '1'
+    if (text in ['1', 'keep', 'k', 'yes', 'y', 'true']) {
+        return true
+    }
+    if (text in ['2', 'delete', 'd', 'no', 'n', 'false']) {
+        return false
+    }
+    error "Answer 1 to keep the genome or 2 to delete it, got '${text}'"
+}
+
+def askPerPeak() {
+    return ask('How many sgRNAs per peak? They are spread evenly across the peak.\nType a whole number [4]: ')
+}
+
+def parsePerPeak(answer) {
+    def text = answer.toString().trim() ?: '4'
+    if (!(text ==~ /\d+/) || text.toInteger() < 1) {
+        error "The number of sgRNAs per peak must be a whole number of 1 or more, got '${text}'"
+    }
+    return text.toInteger()
+}
+
 def askMatch() {
     def answer = ask('How should traits be matched?\n  1) exact trait name (e.g. "Atrial fibrillation")\n  2) any trait containing a word (e.g. "heart", "cardio")\nChoose 1 or 2 [1]: ')
     return [(''): 'exact', '1': 'exact', '2': 'contains'].get(answer?.trim()?.toLowerCase(), answer?.trim()?.toLowerCase())
@@ -301,12 +526,25 @@ workflow {
         error "No traits given"
     }
 
-    // LD settings are asked up front too, so the run needs no further input
+    // LD settings and peak files are asked up front too, so the run needs no further input
     ld_pop = parsePop(params.ld_pop ?: askPop())
     ld_build = parseBuild(params.ld_build ?: askBuild())
     ld_r2_min = parseR2(params.ld_r2_min != null ? params.ld_r2_min : askR2())
+    peaks = parsePeaks(params.atac_peaks ?: askPeaks(ld_build))
+    enzyme = parseEnzyme(params.sgrna_enzyme ?: askEnzyme())
+    per_peak = parsePerPeak(params.sgrna_per_peak != null ? params.sgrna_per_peak : askPerPeak())
+    run_settings.keep_genome = parseKeepGenome(params.keep_genome != null ? params.keep_genome : askKeepGenome())
     ensureLdToken()
     log.info "LD proxies: populations ${ld_pop}, assembly ${ld_build}, R2 >= ${ld_r2_min}"
+    log.info "ATAC-seq peaks: ${peaks.collect { it[1].fileName }.join(', ')}"
+    log.info "sgRNAs: ${per_peak} per peak, ${enzyme}, designed with FlashFry on ${ld_build}"
+    log.info "The genome and its index will be ${run_settings.keep_genome ? 'kept in ' + params.genome_dir : 'deleted when the run finishes'}"
+
+    // kept for the run summary written at the end
+    run_settings.putAll([match: match, traits: terms.join('; '), ld_population: ld_pop,
+                         genome_build: ld_build, ld_r2_min: ld_r2_min,
+                         atac_peaks: peaks.collect { it[1] }.join('; '),
+                         nuclease: enzyme, sgrnas_per_peak: per_peak])
 
     if (match == 'contains') {
         log.info "Fetching GWAS Catalog associations for traits containing: ${terms.join(', ')}"
@@ -340,4 +578,74 @@ workflow {
     }
     LD_PROXY(snps_ch.collate(params.ld_chunk_size.toString().toInteger()), ld_pop, ld_build)
     MERGE_LD(LD_PROXY.out.proxies.collect(), LD_PROXY.out.failed.collect(), EXTRACT_SNPS.out.snps, ld_r2_min)
+
+    // keep the peaks holding at least one query SNP or proxy, one task per peak file
+    OVERLAP_PEAKS(channel.fromList(peaks), MERGE_LD.out.proxies)
+
+    // design CRISPRi guides in those peaks. The genome is downloaded and indexed
+    // once per assembly and nuclease, then removed again unless --keep_genome
+    named_peaks = OVERLAP_PEAKS.out.peaks
+        .filter { bed -> bed.size() > 0 }
+        .map { bed -> tuple(bed.name.replace('.peaks_with_snps.bed', ''), bed) }
+
+    // the genome is only worth fetching and indexing if some peak holds a SNP.
+    // These come out as value channels, so every peak file can use the same ones
+    needed = named_peaks.map { ld_build }.first()
+    jar = GET_FLASHFRY()
+    genome = DOWNLOAD_GENOME(needed)
+    database = FLASHFRY_INDEX(genome, jar, enzyme)
+    DESIGN_SGRNAS(named_peaks, genome, database, jar, enzyme, per_peak, MERGE_LD.out.bed)
+}
+
+// the genome and its index are large, so they go once the guides are designed
+workflow.onComplete {
+    // a record of what produced these results, since many settings change them
+    def report = file("${params.outdir}/pipeline_info")
+    report.mkdirs()
+    def git = { command ->
+        try {
+            def process = ["git", "-C", "${projectDir}", *command].execute()
+            process.waitFor()
+            return process.exitValue() == 0 ? process.text.trim() : null
+        }
+        catch (Exception ignored) {
+            return null
+        }
+    }
+    def lines = ["# ${workflow.manifest.name ?: 'pipeline'} run summary", ""]
+    [
+        'pipeline_version': workflow.manifest.version,
+        'nextflow_version': nextflow.version,
+        'git_commit'      : git(['rev-parse', '--short', 'HEAD']),
+        'git_branch'      : git(['rev-parse', '--abbrev-ref', 'HEAD']),
+        'git_uncommitted' : git(['status', '--porcelain'])?.with { it ? 'yes' : 'no' },
+        'run_name'        : workflow.runName,
+        'session_id'      : workflow.sessionId,
+        'started'         : workflow.start,
+        'completed'       : workflow.complete,
+        'duration'        : workflow.duration,
+        'succeeded'       : workflow.success,
+        'exit_status'     : workflow.exitStatus,
+        'command_line'    : workflow.commandLine,
+        'work_dir'        : workflow.workDir,
+    ].each { key, value -> lines << "${key}: ${value ?: '-'}" }
+
+    lines << "" << "## settings as answered" << ""
+    run_settings.sort().each { key, value -> lines << "${key}: ${value}" }
+
+    lines << "" << "## every parameter, including defaults" << ""
+    params.sort().each { key, value -> lines << "${key}: ${value}" }
+
+    file("${report}/run_${workflow.runName}.txt").text = lines.join('\n') + '\n'
+
+    if (run_settings.keep_genome || !workflow.success) {
+        return
+    }
+    def cache = file(params.genome_dir)
+    def large = cache.exists() ? cache.listFiles().findAll { it.name ==~ /.*\.(fa|fai|db|header)$/ } : []
+    large.each { it.delete() }
+    if (large) {
+        log.info "Deleted the genome and its FlashFry index (${large.size()} files) to save space. " +
+                 "Answer 1 to the genome question, or pass --keep_genome true, to keep them next time"
+    }
 }
