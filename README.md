@@ -28,7 +28,7 @@ Always use `-resume`: finished work is reused, so an interrupted run carries on 
 ## What you need
 
 - [Nextflow](https://www.nextflow.io/docs/latest/install.html) (tested with 25.10) and Java 17 or newer.
-- [Conda](https://docs.conda.io/en/latest/miniconda.html). Packages install themselves on the first run.
+- [Conda](https://docs.conda.io/en/latest/miniconda.html). Packages install themselves on the first run. This version runs on conda only; see [containers](#containers) if you need Docker or Singularity.
 - An LDlink token, free from <https://ldlink.nih.gov/?tab=apiaccess>. You are asked for it once and it is saved. Tokens are personal, so everyone running the pipeline registers their own.
 - Your ATAC-seq peaks as BED files (plain or gzipped; MACS2 narrowPeak works too).
 - About 25 GB of free disk for the sgRNA step, which downloads and indexes a genome.
