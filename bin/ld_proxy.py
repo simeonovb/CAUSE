@@ -17,25 +17,30 @@ BAD_SETTINGS = 3  # exit status telling the pipeline not to retry
 # errors about the request as a whole rather than about one SNP
 SETTINGS_ERRORS = ("api token", "ancestral population", "genome build")
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--snps", required=True, help="comma-separated rsIDs")
-parser.add_argument("--pop", required=True, help="population codes joined with +")
-parser.add_argument("--genome-build", required=True)
-parser.add_argument("--window", type=int, default=500000)
-parser.add_argument("--out", required=True)
-parser.add_argument("--failed", required=True)
-args = parser.parse_args()
 
-token = os.environ.get("LDLINK_TOKEN")
-if not token:
-    print("LDLINK_TOKEN is not set. Run: nextflow secrets set LDLINK_TOKEN <your token>", file=sys.stderr)
-    sys.exit(BAD_SETTINGS)
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--snps", required=True, help="comma-separated rsIDs")
+    parser.add_argument("--pop", required=True, help="population codes joined with +")
+    parser.add_argument("--genome-build", required=True)
+    parser.add_argument("--window", type=int, default=500000)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--failed", required=True)
+    return parser.parse_args(argv)
 
 
-def ld_proxy(snp):
+def read_token():
+    token = os.environ.get("LDLINK_TOKEN")
+    if not token:
+        print("LDLINK_TOKEN is not set. Run: nextflow secrets set LDLINK_TOKEN <your token>", file=sys.stderr)
+        sys.exit(BAD_SETTINGS)
+    return token
+
+
+def ld_proxy(snp, pop, genome_build, window, token):
     """Return (table, None) on success or (None, message) when LDlink rejects the SNP."""
-    query = {"var": snp, "pop": args.pop, "r2_d": "r2", "window": args.window,
-             "genome_build": args.genome_build, "token": token}
+    query = {"var": snp, "pop": pop, "r2_d": "r2", "window": window,
+             "genome_build": genome_build, "token": token}
     for attempt in range(1, 6):
         r = requests.get(API_URL, params=query, timeout=300)
         # LDlink reports errors as JSON, with HTTP 200
@@ -54,24 +59,34 @@ def ld_proxy(snp):
     raise SystemExit(f"LDlink kept refusing requests for {snp}")
 
 
-tables, failures = [], []
-snp_list = args.snps.split(",")
-for number, snp in enumerate(snp_list, start=1):
-    # printed as each SNP is done, so a long run visibly moves along
-    print(f"  {number} of {len(snp_list)} SNPs in this chunk: {snp}", flush=True)
-    table, error = ld_proxy(snp)
-    if error:
-        failures.append([snp, error])
-        continue
-    table.insert(0, "query_snp", snp)
-    tables.append(table)
+def write_failures(path, failures):
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
+        writer.writerow(["query_snp", "error"])
+        writer.writerows(failures)
 
-proxies = pd.concat(tables) if tables else pd.DataFrame(columns=["query_snp"] + COLUMNS)
-proxies.to_csv(args.out, sep="\t", index=False)
 
-with open(args.failed, "w", newline="") as fh:
-    writer = csv.writer(fh, delimiter="\t", lineterminator="\n")
-    writer.writerow(["query_snp", "error"])
-    writer.writerows(failures)
+def main(args):
+    token = read_token()
 
-print(f"{len(tables)} SNPs queried, {len(failures)} failed")
+    tables, failures = [], []
+    snp_list = args.snps.split(",")
+    for number, snp in enumerate(snp_list, start=1):
+        # printed as each SNP is done, so a long run visibly moves along
+        print(f"  {number} of {len(snp_list)} SNPs in this chunk: {snp}", flush=True)
+        table, error = ld_proxy(snp, args.pop, args.genome_build, args.window, token)
+        if error:
+            failures.append([snp, error])
+            continue
+        table.insert(0, "query_snp", snp)
+        tables.append(table)
+
+    proxies = pd.concat(tables) if tables else pd.DataFrame(columns=["query_snp"] + COLUMNS)
+    proxies.to_csv(args.out, sep="\t", index=False)
+    write_failures(args.failed, failures)
+
+    print(f"{len(tables)} SNPs queried, {len(failures)} failed")
+
+
+if __name__ == "__main__":
+    main(parse_args())
