@@ -1,0 +1,86 @@
+cff-version: 1.2.0
+title: "CAUSE: Chromatin-Accessible Uncovering of SNP Effects"
+message: >-
+  If you use this pipeline, please cite it as below, along with the GWAS
+  Catalog, LDlink and FlashFry.
+type: software
+
+authors:
+  - family-names: Simeonov
+    given-names: Boris
+    email: bsimeonovb@gmail.com
+    orcid: "https://orcid.org/0009-0000-4771-1019"
+
+abstract: >-
+  A Nextflow pipeline that goes from a GWAS trait to CRISPRi sgRNAs for its
+  regulatory variants. It collects trait-associated SNPs from the GWAS
+  Catalog, expands them with linkage-disequilibrium proxies from LDlink,
+  keeps the ATAC-seq peaks that contain at least one of those SNPs, and
+  designs guides spread across those peaks with FlashFry.
+
+version: 0.4.0
+date-released: "2026-10-15"
+license: MIT
+repository-code: "https://github.com/simeonovb/CAUSE"
+url: "https://github.com/simeonovb/CAUSE"
+
+keywords:
+  - nextflow
+  - GWAS
+  - linkage disequilibrium
+  - ATAC-seq
+  - CRISPRi
+  - sgRNA design
+  - regulatory variants
+
+references:
+  - type: article
+    title: >-
+      The NHGRI-EBI GWAS Catalog: standards for reusability, sustainability
+      and diversity
+    authors:
+      - family-names: Cerezo
+        given-names: M.
+      - family-names: Sollis
+        given-names: E.
+      - family-names: Ji
+        given-names: Y.
+    journal: "Nucleic Acids Research"
+    year: 2025
+    volume: 53
+    issue: D1
+    start: D998
+    end: D1005
+    doi: "10.1093/nar/gkae1070"
+
+  - type: article
+    title: >-
+      LDlink: a web-based application for exploring population-specific
+      haplotype structure and linking correlated alleles of possible
+      functional variants
+    authors:
+      - family-names: Machiela
+        given-names: M. J.
+      - family-names: Chanock
+        given-names: S. J.
+    journal: "Bioinformatics"
+    year: 2015
+    volume: 31
+    issue: 21
+    start: 3555
+    end: 3557
+    doi: "10.1093/bioinformatics/btv402"
+
+  - type: article
+    title: >-
+      FlashFry: a fast and flexible tool for large-scale CRISPR target design
+    authors:
+      - family-names: McKenna
+        given-names: A.
+      - family-names: Shendure
+        given-names: J.
+    journal: "BMC Biology"
+    year: 2018
+    volume: 16
+    start: 74
+    doi: "10.1186/s12915-018-0545-0"
