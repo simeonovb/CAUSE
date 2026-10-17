@@ -6,6 +6,7 @@ work/
 
 # Pipeline outputs
 results/
+results_*/
 test_results/
 output.txt
 
