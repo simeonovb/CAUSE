@@ -28,10 +28,27 @@ Always use `-resume`: finished work is reused, so an interrupted run carries on 
 ## What you need
 
 - [Nextflow](https://www.nextflow.io/docs/latest/install.html) (tested with 25.10) and Java 17 or newer.
-- [Conda](https://docs.conda.io/en/latest/miniconda.html). Packages install themselves on the first run. This version runs on conda only; see [containers](#containers) if you need Docker or Singularity.
+- [Conda](https://docs.conda.io/en/latest/miniconda.html), the default. Packages install themselves on the first run. Or [Docker](#docker) instead of conda.
 - An LDlink token, free from <https://ldlink.nih.gov/?tab=apiaccess>. You are asked for it once and it is saved. Tokens are personal, so everyone running the pipeline registers their own.
 - Your ATAC-seq peaks as BED files (plain or gzipped; MACS2 narrowPeak works too).
 - About 25 GB of free disk for the sgRNA step, which downloads and indexes a genome.
+
+## Docker
+
+Each step can run in a Docker container instead of a conda environment. The images are built from the same `envs/*.yml` files conda uses, so both give the same packages and the same results. Build them once (about 2.6 GB together):
+
+```bash
+docker build -f containers/Dockerfile --build-arg ENV=gwas  -t cause-nf/gwas:0.4.0  envs
+docker build -f containers/Dockerfile --build-arg ENV=sgrna -t cause-nf/sgrna:0.4.0 envs
+```
+
+then add `-profile docker` to any run:
+
+```bash
+nextflow run main.nf -profile docker -resume
+```
+
+The image tag follows the pipeline version in `nextflow.config`, so rebuild the images with the new tag after changing the version or anything in `envs/`. On Windows, use Docker Desktop with WSL integration turned on for your distribution, and run the pipeline from WSL.
 
 ## The questions
 

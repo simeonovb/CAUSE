@@ -6,6 +6,7 @@ run_settings = [keep_genome: false]
 process RESOLVE_TRAITS {
     tag "${keyword}"
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
 
     // retry transient API failures, but not exit status 3 (no trait matches)
     errorStrategy { task.exitStatus == 3 ? 'terminate' : 'retry' }
@@ -28,6 +29,7 @@ process RESOLVE_TRAITS {
 process FETCH_GWAS {
     tag "${trait}"
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     publishDir "${params.outdir}/gwas_catalog/per_trait", mode: 'copy', overwrite: true
 
     // the API is a remote service, so retry transient failures,
@@ -54,6 +56,7 @@ process FETCH_GWAS {
 
 process MERGE_GWAS {
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     publishDir "${params.outdir}/gwas_catalog", mode: 'copy', overwrite: true
 
     input:
@@ -82,6 +85,7 @@ process MERGE_GWAS {
 
 process EXTRACT_SNPS {
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     publishDir "${params.outdir}/ld_proxy", mode: 'copy', overwrite: true
 
     input:
@@ -103,6 +107,7 @@ process EXTRACT_SNPS {
 process LD_PROXY {
     tag "${snps.size()} SNPs from ${snps[0]}"
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     secret 'LDLINK_TOKEN'
 
     // retry transient API failures, but not exit status 3 (bad token or settings)
@@ -132,6 +137,7 @@ process LD_PROXY {
 
 process MERGE_LD {
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     publishDir "${params.outdir}/ld_proxy", mode: 'copy', overwrite: true
 
     input:
@@ -155,6 +161,7 @@ process MERGE_LD {
 process OVERLAP_PEAKS {
     tag "${name}"
     conda "${projectDir}/envs/gwas.yml"
+    container "cause-nf/gwas:${workflow.manifest.version}"
     publishDir "${params.outdir}/atac_overlap", mode: 'copy', overwrite: true
 
     input:
@@ -175,6 +182,7 @@ process OVERLAP_PEAKS {
 
 process GET_FLASHFRY {
     conda "${projectDir}/envs/sgrna.yml"
+    container "cause-nf/sgrna:${workflow.manifest.version}"
     // kept next to the genome, so it is downloaded once
     storeDir "${params.genome_dir}"
 
@@ -190,6 +198,7 @@ process GET_FLASHFRY {
 process DOWNLOAD_GENOME {
     tag "${build}"
     conda "${projectDir}/envs/sgrna.yml"
+    container "cause-nf/sgrna:${workflow.manifest.version}"
     storeDir "${params.genome_dir}"
     debug params.progress
 
@@ -222,6 +231,7 @@ process DOWNLOAD_GENOME {
 process FLASHFRY_INDEX {
     tag "${build} ${enzyme}"
     conda "${projectDir}/envs/sgrna.yml"
+    container "cause-nf/sgrna:${workflow.manifest.version}"
     storeDir "${params.genome_dir}"
     debug params.progress
 
@@ -249,6 +259,7 @@ process FLASHFRY_INDEX {
 process DESIGN_SGRNAS {
     tag "${name}"
     conda "${projectDir}/envs/sgrna.yml"
+    container "cause-nf/sgrna:${workflow.manifest.version}"
     publishDir "${params.outdir}/sgrna", mode: 'copy', overwrite: true
 
     input:
